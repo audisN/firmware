@@ -36,7 +36,9 @@ PacketAPI::PacketAPI(PacketServer *_server)
 int32_t PacketAPI::runOnce()
 {
     bool success = false;
-#ifndef ARCH_PORTDUINO
+#if !defined(ARCH_PORTDUINO) && !defined(MUI_WITH_BLUETOOTH)
+    // Boards that define MUI_WITH_BLUETOOTH (enough RAM for NimBLE and LVGL together) keep the screen UI
+    // running while a phone is connected over BLE, like portduino does.
     if (config.bluetooth.enabled) {
         if (!programmingMode) {
             // in programmingMode we don't send any packets to the client except this one notify
