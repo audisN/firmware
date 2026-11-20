@@ -56,4 +56,13 @@
 #define LR2021_MAX_POWER 22     // chip setting; the module's external PA gives ~29.8 dBm at 868 MHz
 #define LR2021_MAX_POWER_HF 2   // HF TX is blocked in rfswitch.h anyway; NiceRF limit is register 4 (+2 dBm)
 
+// The module's sub-GHz PA gain, per chip dBm 0..22, so Meshtastic's region limit applies at the antenna
+// (EU_868: 27 dBm). From the NiceRF datasheet V1.3 868 MHz table (5 V, register in 0.5 dB steps):
+// chip 0.5 -> 16.2, 6.5 -> 21.4, 12.5 -> 26.5, 15.5 -> 28.3, 18.5 -> 29.3, 22 -> 29.8 dBm out.
+// Interpolated and rounded up so the antenna stays at or under the limit. Verify with a power meter.
+// Owner's choice (screen menu "TX power"): 27 dBm = 0.5 W (EU_868 limit) or 30 dBm = 1 W at the antenna.
+#define TX_POWER_ABOVE_REGION_LIMIT 30
+#define NUM_PA_POINTS 23
+#define TX_GAIN_LORA 16, 16, 16, 16, 16, 16, 15, 15, 15, 15, 15, 15, 15, 14, 14, 13, 13, 12, 12, 11, 10, 9, 8
+
 #endif

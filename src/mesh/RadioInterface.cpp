@@ -1379,8 +1379,17 @@ void RadioInterface::applyModemConfig()
 
     power = loraConfig.tx_power;
 
-    if ((power == 0) || ((power > newRegion->powerLimit) && !devicestate.owner.is_licensed))
+#ifdef TX_POWER_ABOVE_REGION_LIMIT
+    // Variant opt-in: the owner may pick up to this antenna power (dBm) above the region limit. The default
+    // (tx_power 0) still follows the region limit.
+    const int userMaxPower = max((int)newRegion->powerLimit, (int)TX_POWER_ABOVE_REGION_LIMIT);
+#else
+    const int userMaxPower = newRegion->powerLimit;
+#endif
+    if (power == 0)
         power = newRegion->powerLimit;
+    else if ((power > userMaxPower) && !devicestate.owner.is_licensed)
+        power = userMaxPower;
 
     if (power == 0)
         power = 17; // Default to this power level if we don't have a valid regional power limit (powerLimit of newRegion defaults
@@ -1509,6 +1518,10 @@ void RadioInterface::limitPower(int8_t loraMaxPower)
 
     if (myRegion->powerLimit)
         maxPower = myRegion->powerLimit;
+#ifdef TX_POWER_ABOVE_REGION_LIMIT
+    if (maxPower < TX_POWER_ABOVE_REGION_LIMIT)
+        maxPower = TX_POWER_ABOVE_REGION_LIMIT;
+#endif
 
     if ((power > maxPower) && !devicestate.owner.is_licensed) {
         LOG_INFO("Lower Tx power: regulatory limits");
