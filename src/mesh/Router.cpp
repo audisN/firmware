@@ -413,7 +413,10 @@ meshtastic_QueueStatus Router::getQueueStatus()
 {
     if (!iface) {
         meshtastic_QueueStatus qs;
-        qs.res = qs.mesh_packet_id = qs.free = qs.maxlen = 0;
+        qs.res = qs.mesh_packet_id = 0;
+        // No radio: packets for the local node (admin/config) are still handled, so report an empty queue.
+        // "0 free of 0" made API clients (python CLI --set) wait forever for queue space.
+        qs.free = qs.maxlen = MAX_TX_QUEUE;
         return qs;
     } else
         return iface->getQueueStatus();
