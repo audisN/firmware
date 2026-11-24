@@ -48,7 +48,7 @@
 #define LR2021_SPI_NSS_PIN LORA_CS
 #define LR2021_IRQ_PIN 1           // IO1 (was speaker amp AUDIO_EN) <- module IRQ = LR2021 DIO9
 #define LR2021_BUSY_PIN 42         // IO42 (was RGB LED data) <- module BUSY
-#define LR2021_NRESET_PIN RADIOLIB_NC // module RESET held high by RC, not wired to the MCU
+#define LR2021_NRESET_PIN 48 // IO48 = microSD DATA2 (unused in 1-bit SDMMC), R17 10k pull-up on the board
 
 #define LR2021_IRQ_DIO_NUM 9
 #define LR2021_DIO3_TCXO_VOLTAGE 3.3f
