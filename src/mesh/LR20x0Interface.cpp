@@ -1059,19 +1059,47 @@ bool LR20x0Interface<T>::spectrumTuneRx(uint32_t loHz, uint32_t hiHz, uint32_t f
     const uint16_t cal[3] = {(uint16_t)((uint16_t)((loHz + 2000000) / 4000000) | path),
                              (uint16_t)((uint16_t)((mid + 2000000) / 4000000) | path),
                              (uint16_t)((uint16_t)((hiHz + 2000000) / 4000000) | path)};
-    if (lora.standby() != RADIOLIB_ERR_NONE)
-        return false;
-    if (lora.setPacketType(RADIOLIB_LR2021_PACKET_TYPE_LORA) != RADIOLIB_ERR_NONE)
-        return false;
+    {
+        int16_t e = lora.standby();
+        if (e != RADIOLIB_ERR_NONE) {
+            LOG_WARN("Spectrum: tune step lora.standby -> %d", e);
+            return false;
+        }
+    }
+    {
+        int16_t e = lora.setPacketType(RADIOLIB_LR2021_PACKET_TYPE_LORA);
+        if (e != RADIOLIB_ERR_NONE) {
+            LOG_WARN("Spectrum: tune step lora.setPacketType -> %d", e);
+            return false;
+        }
+    }
     // the LoRa channel filter is the measurement bandwidth; the raw I/Q route samples at 4x this bandwidth
-    if (lora.setBandwidth(packetType == c_packetTypeRaw ? 62.5f : (filterHz < 250000 ? 125.0f : 250.0f)) != RADIOLIB_ERR_NONE)
-        return false;
-    (void)lora.calibrateFrontEnd(cal); // a strong signal can fail it; the measurement is still useful
+    {
+        int16_t e = lora.setBandwidth(packetType == c_packetTypeRaw ? 62.5f : (filterHz < 250000 ? 125.0f : 250.0f));
+        if (e != RADIOLIB_ERR_NONE) {
+            LOG_WARN("Spectrum: tune step lora.setBandwidth -> %d", e);
+            return false;
+        }
+    }
+    // a strong signal on a calibration frequency can fail it; the measurement is still useful, but the chip keeps the
+    // error and refuses later commands until it is cleared
+    const int16_t calSt = lora.calibrateFrontEnd(cal);
+    uint16_t errors = 0;
+    (void)lora.getErrors(&errors);
+    if (calSt != RADIOLIB_ERR_NONE || errors) {
+        LOG_DEBUG("Spectrum: frontend calibration st %d errors 0x%04x, cleared", calSt, errors);
+        (void)lora.clearErrors();
+    }
     if (lora.setRxPath(hf ? RADIOLIB_LR2021_RX_PATH_HF : RADIOLIB_LR2021_RX_PATH_LF, hf ? lora.gainModeHf : lora.gainModeLf) !=
         RADIOLIB_ERR_NONE)
         return false;
-    if (lora.setRfFrequency(freqHz) != RADIOLIB_ERR_NONE)
-        return false;
+    {
+        int16_t e = lora.setRfFrequency(freqHz);
+        if (e != RADIOLIB_ERR_NONE) {
+            LOG_WARN("Spectrum: tune step lora.setRfFrequency -> %d", e);
+            return false;
+        }
+    }
     if (packetType != RADIOLIB_LR2021_PACKET_TYPE_LORA && lora.setPacketType(packetType) != RADIOLIB_ERR_NONE)
         return false;
     spectrumCalLo = loHz;
@@ -1081,7 +1109,7 @@ bool LR20x0Interface<T>::spectrumTuneRx(uint32_t loHz, uint32_t hiHz, uint32_t f
 }
 
 template <typename T>
-bool LR20x0Interface<T>::spectrumSweepChunk(uint32_t loHz, uint32_t hiHz, uint32_t startHz, uint32_t stepHz, uint16_t n,
+bool LR20x0Interface<T>::spectrumSweepTry(uint32_t loHz, uint32_t hiHz, uint32_t startHz, uint32_t stepHz, uint16_t n,
                                             int16_t *out)
 {
     if (n == 0 || n > 64)
@@ -1093,10 +1121,19 @@ bool LR20x0Interface<T>::spectrumSweepChunk(uint32_t loHz, uint32_t hiHz, uint32
                 return false;
         }
         spectrumState = SPEC_NONE;
-        if (!pramReady() || !spectrumTuneRx(loHz, hiHz, startHz, RADIOLIB_LR2021_PACKET_TYPE_LORA, stepHz))
+        if (!pramReady()) {
+            LOG_WARN("Spectrum: PRAM not ready");
             return false;
-        if (lora.setRx(RADIOLIB_LR2021_RX_TIMEOUT_INF) != RADIOLIB_ERR_NONE)
+        }
+        if (!spectrumTuneRx(loHz, hiHz, startHz, RADIOLIB_LR2021_PACKET_TYPE_LORA, stepHz)) {
+            LOG_WARN("Spectrum: tune failed lo %u hi %u f %u filter %u", (unsigned)loHz, (unsigned)hiHz, (unsigned)startHz, (unsigned)stepHz);
             return false;
+        }
+        int16_t rxst = lora.setRx(RADIOLIB_LR2021_RX_TIMEOUT_INF);
+        if (rxst != RADIOLIB_ERR_NONE) {
+            LOG_WARN("Spectrum: setRx %d", rxst);
+            return false;
+        }
         uint8_t p[15] = {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, (uint8_t)(c_settleDwell >> 8), (uint8_t)c_settleDwell, 0, 1};
         putBe32(p + 1, startHz);
         uint8_t r[2];
@@ -1113,7 +1150,9 @@ bool LR20x0Interface<T>::spectrumSweepChunk(uint32_t loHz, uint32_t hiHz, uint32
     p[13] = c_avg >> 8;
     p[14] = c_avg;
     uint8_t r[2] = {0};
-    if (rawRead(c_cmdPram, p, sizeof(p), r, sizeof(r)) != RADIOLIB_ERR_NONE || (((uint16_t)r[0] << 8) | r[1]) != n) {
+    int16_t st = rawRead(c_cmdPram, p, sizeof(p), r, sizeof(r));
+    if (st != RADIOLIB_ERR_NONE || (((uint16_t)r[0] << 8) | r[1]) != n) {
+        LOG_WARN("Spectrum: sweep cmd st %d got %u of %u, f %u step %u", st, ((unsigned)r[0] << 8) | r[1], n, (unsigned)startHz, (unsigned)stepHz);
         spectrumState = SPEC_NONE; // set the radio up again on the next call
         return false;
     }
@@ -1125,6 +1164,26 @@ bool LR20x0Interface<T>::spectrumSweepChunk(uint32_t loHz, uint32_t hiHz, uint32
         out[k] = -(int16_t)(sum / c_avg); // 9-bit RSSI = -2 x dBm
     }
     return true;
+}
+
+template <typename T>
+bool LR20x0Interface<T>::spectrumSweepChunk(uint32_t loHz, uint32_t hiHz, uint32_t startHz, uint32_t stepHz, uint16_t n,
+                                            int16_t *out)
+{
+    if (spectrumSweepTry(loHz, hiHz, startHz, stepHz, n, out)) {
+        spectrumFailures = 0;
+        return true;
+    }
+    // fast window changes can leave the chip refusing the sweep command for good: reset it after 2 failures in a row
+    // (fullBegin() clears the PRAM program, the next call loads it again and sets the radio up)
+    if (++spectrumFailures >= 2) {
+        LOG_WARN("Spectrum: sweep keeps failing, reset the radio");
+        spectrumFailures = 0;
+        spectrumState = SPEC_NONE;
+        if (fullBegin(getFreq()))
+            (void)lora.setDioIrqConfig(lora.irqDioNum, 0);
+    }
+    return false;
 }
 
 template <typename T> bool LR20x0Interface<T>::spectrumFftFrame(uint32_t centerHz, uint8_t nseg, uint8_t *out)

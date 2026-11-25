@@ -50,6 +50,8 @@ template <class T> class LR20x0Interface : public RadioLibInterface
     bool spectrumEnter() override;
     bool spectrumSweepChunk(uint32_t loHz, uint32_t hiHz, uint32_t startHz, uint32_t stepHz, uint16_t n, int16_t *out) override;
     bool spectrumFftFrame(uint32_t centerHz, uint8_t nseg, uint8_t *out) override;
+    bool spectrumSweepTry(uint32_t loHz, uint32_t hiHz, uint32_t startHz, uint32_t stepHz, uint16_t n, int16_t *out);
+    uint8_t spectrumFailures = 0;
     void spectrumLeave() override;
     bool pramReady();
     bool pramLoad();
