@@ -1,4 +1,33 @@
 #include "ReliableRouter.h"
+#ifdef HAS_OWN_RELAY_API
+#include "mesh/OwnRelayApi.h"
+#include <atomic>
+namespace
+{
+OwnRelayHeard ownRelay = {};
+std::atomic<uint32_t> ownRelaySeq{0};
+} // namespace
+// main loop writes, screen task reads; the sequence number guards against a torn copy
+void ownRelayHeardRecord(uint8_t relay, int32_t rssi, float snr)
+{
+    ownRelaySeq.fetch_add(1);
+    ownRelay.relay = relay;
+    ownRelay.rssi = (int16_t)rssi;
+    ownRelay.snr = snr;
+    ownRelay.count++;
+    ownRelaySeq.fetch_add(1);
+}
+bool ownRelayHeardGet(OwnRelayHeard *out)
+{
+    for (int tries = 0; tries < 4; tries++) {
+        const uint32_t a = ownRelaySeq.load();
+        *out = ownRelay;
+        if (!(a & 1) && ownRelaySeq.load() == a)
+            return out->count != 0;
+    }
+    return false;
+}
+#endif
 #include "AckProof.h"
 #include "Default.h"
 #include "MeshTypes.h"
@@ -62,6 +91,10 @@ void ReliableRouter::perhapsGenerateImplicitAckForOwnOverheard(const meshtastic_
         return;
 
     printPacket("Rx someone rebroadcasting for us", p);
+#ifdef HAS_OWN_RELAY_API
+    if (p->relay_node && p->relay_node != (getNodeNum() & 0xff))
+        ownRelayHeardRecord(p->relay_node, p->rx_rssi, p->rx_snr);
+#endif
 
     // We are seeing someone rebroadcast one of our transmissions. If this is the first time we saw
     // this, cancel any retransmissions we have queued up and generate an internal ack for the
