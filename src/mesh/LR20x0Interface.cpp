@@ -1061,7 +1061,7 @@ template <typename T> bool LR20x0Interface<T>::spectrumEnter()
 template <typename T>
 bool LR20x0Interface<T>::spectrumTuneRx(uint32_t loHz, uint32_t hiHz, uint32_t freqHz, uint8_t packetType, uint32_t filterHz)
 {
-    const bool hf = loHz >= 1500000000UL;
+    const bool hf = freqHz >= 1500000000UL; // the window (or FFT calibration span) may start below the HF range
     const uint16_t path = hf ? RADIOLIB_LR2021_CALIBRATE_FE_HF_PATH : RADIOLIB_LR2021_CALIBRATE_FE_LF_PATH;
     const uint32_t mid = loHz / 2 + hiHz / 2;
     const uint16_t cal[3] = {(uint16_t)((uint16_t)((loHz + 2000000) / 4000000) | path),
