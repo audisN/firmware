@@ -187,6 +187,14 @@ template <typename T> bool LR20x0Interface<T>::init()
 
     // \todo Display actual typename of the adapter, not just `LR20x0`
     LOG_INFO("LR20x0 init result %d", res);
+#if RADIOLIB_GODMODE
+    {
+        uint8_t fwMajor = 0, fwMinor = 0;
+        int16_t vst = lora.getVersion(&fwMajor, &fwMinor);
+        LOG_INFO("LR20x0 chip firmware (GetVersion 0x0101): st %d, version %u.%u (0x%02X%02X)", vst, fwMajor, fwMinor, fwMajor,
+                 fwMinor);
+    }
+#endif
     if (res == RADIOLIB_ERR_CHIP_NOT_FOUND || res == RADIOLIB_ERR_SPI_CMD_FAILED)
         return false;
 
@@ -225,8 +233,9 @@ template <typename T> bool LR20x0Interface<T>::init()
         res = lora.setCRC(2);
 
     // Standard DCDC ramp timing from RadioLib workarounds (register 0x00F20024)
-    // Currently requires radiolib godmode
-#if RADIOLIB_GODMODE
+    // Currently requires radiolib godmode and a RadioLib with setRegMode(mode, rampTimes) (RadioLib 7.8.1 has only
+    // setRegMode(mode)), so it is opt-in: boards that enable godmode for other reasons keep the default timing.
+#if RADIOLIB_GODMODE && defined(LR2021_SET_REG_MODE_RAMP)
     if (res == RADIOLIB_ERR_NONE) {
         uint8_t rampTimes[4] = {15, 15, 15, 15}; // Standard case for all conditions
         // godmode-only DCDC ramp tuning: log failures but don't fail init (radio is already up)
@@ -949,6 +958,220 @@ template <typename T> int16_t LR20x0Interface<T>::getCurrentRSSI()
     float rssi = lora.getRSSI(false, true);
     return (int16_t)round(rssi);
 }
+
+#if defined(HAS_SPECTRUM) && RADIOLIB_GODMODE
+// The scanner runs lr2021-re's Patch RAM program on the LR2021's own CPU (see lr2021_pram.h and
+// github.com/SAMS0N1TE/lr2021-sdr): ActivatePram (0x012D) sub-command 1 retunes and reads the instantaneous RSSI
+// point by point while the radio stays in RX, sub-command 9 captures raw I/Q and returns a 256-point FFT in dB.
+#include "lr2021_pram.h"
+
+namespace
+{
+// RadioLib keeps the raw SPI command protected
+struct LR2021Raw : public LR2021 {
+    using LRxxxx::SPIcommand;
+};
+constexpr uint16_t c_cmdPram = 0x012D;
+constexpr uint32_t c_pramHost = 0x801000; // write-only window (reading it stalls the chip)
+constexpr uint32_t c_pramCpu = 0x101000;
+constexpr uint32_t c_sweepOut = 0x101C80;
+constexpr uint32_t c_fftOut = 0x807B00;
+constexpr uint8_t c_packetTypeRaw = 0x0B; // raw I/Q route, needed by the FFT capture
+constexpr uint16_t c_dwell = 600;          // x16 busy-wait loops on the chip after each retune (~0.85 ms)
+constexpr uint16_t c_avg = 2;              // RSSI readings averaged per point
+constexpr uint16_t c_settleDwell = 4000;   // first point after entering RX reads garbage: settle on one
+
+uint32_t pramWord(size_t i)
+{
+    uint32_t w = 0;
+    for (size_t b = 0; b < 4 && 4 * i + b < sizeof(lr2021_pram_bin); b++)
+        w |= (uint32_t)lr2021_pram_bin[4 * i + b] << (8 * b);
+    return w;
+}
+
+void putBe32(uint8_t *p, uint32_t v)
+{
+    p[0] = v >> 24;
+    p[1] = v >> 16;
+    p[2] = v >> 8;
+    p[3] = v;
+}
+} // namespace
+
+template <typename T>
+int16_t LR20x0Interface<T>::rawRead(uint16_t cmd, const uint8_t *params, size_t paramLen, uint8_t *reply, size_t replyLen)
+{
+    return static_cast<LR2021Raw &>(static_cast<LR2021 &>(lora)).SPIcommand(cmd, false, reply, replyLen, params, paramLen);
+}
+
+template <typename T> bool LR20x0Interface<T>::pramHello()
+{
+    const uint8_t p[2] = {2, 0xAB};
+    uint8_t r[6] = {0};
+    return rawRead(c_cmdPram, p, sizeof(p), r, sizeof(r)) == RADIOLIB_ERR_NONE && memcmp(r, "LRC1", 4) == 0;
+}
+
+template <typename T> bool LR20x0Interface<T>::pramLoad()
+{
+    const size_t words = (sizeof(lr2021_pram_bin) + 3) / 4;
+    if (lora.standby() != RADIOLIB_ERR_NONE)
+        return false;
+    for (size_t i = 0; i < words; i++)
+        if (lora.writeRegMemMask32(c_pramHost + 4 * i, 0xFFFFFFFF, pramWord(i)) != RADIOLIB_ERR_NONE)
+            return false;
+    uint8_t act = 0;
+    if (static_cast<LR2021Raw &>(static_cast<LR2021 &>(lora)).SPIcommand(c_cmdPram, true, &act, 1) != RADIOLIB_ERR_NONE)
+        return false;
+    unsigned bad = 0;
+    for (size_t i = 0; i < words; i += 32) {
+        uint32_t w[32];
+        const size_t n = words - i > 32 ? 32 : words - i;
+        if (lora.readRegMem32(c_pramCpu + 4 * i, w, n) != RADIOLIB_ERR_NONE)
+            return false;
+        for (size_t k = 0; k < n; k++)
+            bad += w[k] != pramWord(i + k);
+    }
+    const bool ok = !bad && pramHello();
+    LOG_INFO("Spectrum: PRAM program %u words loaded, %u mismatched, %s", (unsigned)words, bad, ok ? "ok" : "FAILED");
+    return ok;
+}
+
+template <typename T> bool LR20x0Interface<T>::pramReady()
+{
+    return pramHello() || pramLoad();
+}
+
+template <typename T> bool LR20x0Interface<T>::spectrumEnter()
+{
+    uint8_t major = 0, minor = 0;
+    if (lora.getVersion(&major, &minor) != RADIOLIB_ERR_NONE || major != 1 || minor != 0x18) {
+        LOG_WARN("Spectrum: needs LR2021 ROM 1.24, chip has %u.%u", major, minor);
+        return false;
+    }
+    if (trySetStandby() != RADIOLIB_ERR_NONE)
+        return false;
+    // no packet IRQs on the IRQ line while scanning
+    if (lora.setDioIrqConfig(lora.irqDioNum, 0) != RADIOLIB_ERR_NONE)
+        return false;
+    spectrumState = SPEC_NONE;
+    return pramReady();
+}
+
+// standby, LoRa filter, frontend calibration for the window (the chip keeps 3), RX path and frequency
+template <typename T>
+bool LR20x0Interface<T>::spectrumTuneRx(uint32_t loHz, uint32_t hiHz, uint32_t freqHz, uint8_t packetType, uint32_t filterHz)
+{
+    const bool hf = loHz >= 1500000000UL;
+    const uint16_t path = hf ? RADIOLIB_LR2021_CALIBRATE_FE_HF_PATH : RADIOLIB_LR2021_CALIBRATE_FE_LF_PATH;
+    const uint32_t mid = loHz / 2 + hiHz / 2;
+    const uint16_t cal[3] = {(uint16_t)((uint16_t)((loHz + 2000000) / 4000000) | path),
+                             (uint16_t)((uint16_t)((mid + 2000000) / 4000000) | path),
+                             (uint16_t)((uint16_t)((hiHz + 2000000) / 4000000) | path)};
+    if (lora.standby() != RADIOLIB_ERR_NONE)
+        return false;
+    if (lora.setPacketType(RADIOLIB_LR2021_PACKET_TYPE_LORA) != RADIOLIB_ERR_NONE)
+        return false;
+    // the LoRa channel filter is the measurement bandwidth; the raw I/Q route samples at 4x this bandwidth
+    if (lora.setBandwidth(packetType == c_packetTypeRaw ? 62.5f : (filterHz < 250000 ? 125.0f : 250.0f)) != RADIOLIB_ERR_NONE)
+        return false;
+    (void)lora.calibrateFrontEnd(cal); // a strong signal can fail it; the measurement is still useful
+    if (lora.setRxPath(hf ? RADIOLIB_LR2021_RX_PATH_HF : RADIOLIB_LR2021_RX_PATH_LF, hf ? lora.gainModeHf : lora.gainModeLf) !=
+        RADIOLIB_ERR_NONE)
+        return false;
+    if (lora.setRfFrequency(freqHz) != RADIOLIB_ERR_NONE)
+        return false;
+    if (packetType != RADIOLIB_LR2021_PACKET_TYPE_LORA && lora.setPacketType(packetType) != RADIOLIB_ERR_NONE)
+        return false;
+    spectrumCalLo = loHz;
+    spectrumCalHi = hiHz;
+    spectrumFilterHz = filterHz;
+    return true;
+}
+
+template <typename T>
+bool LR20x0Interface<T>::spectrumSweepChunk(uint32_t loHz, uint32_t hiHz, uint32_t startHz, uint32_t stepHz, uint16_t n,
+                                            int16_t *out)
+{
+    if (n == 0 || n > 64)
+        return false;
+    if (spectrumState != SPEC_SWEEP || loHz != spectrumCalLo || hiHz != spectrumCalHi || stepHz != spectrumFilterHz) {
+        if (spectrumState == SPEC_FFT) {
+            // the raw capture route does not hand the radio back cleanly: reset the chip (and reload PRAM below)
+            if (!fullBegin(getFreq()) || lora.setDioIrqConfig(lora.irqDioNum, 0) != RADIOLIB_ERR_NONE)
+                return false;
+        }
+        spectrumState = SPEC_NONE;
+        if (!pramReady() || !spectrumTuneRx(loHz, hiHz, startHz, RADIOLIB_LR2021_PACKET_TYPE_LORA, stepHz))
+            return false;
+        if (lora.setRx(RADIOLIB_LR2021_RX_TIMEOUT_INF) != RADIOLIB_ERR_NONE)
+            return false;
+        uint8_t p[15] = {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, (uint8_t)(c_settleDwell >> 8), (uint8_t)c_settleDwell, 0, 1};
+        putBe32(p + 1, startHz);
+        uint8_t r[2];
+        (void)rawRead(c_cmdPram, p, sizeof(p), r, sizeof(r));
+        spectrumState = SPEC_SWEEP;
+    }
+    uint8_t p[15] = {1};
+    putBe32(p + 1, startHz);
+    putBe32(p + 5, stepHz);
+    p[9] = n >> 8;
+    p[10] = n;
+    p[11] = c_dwell >> 8;
+    p[12] = (uint8_t)c_dwell;
+    p[13] = c_avg >> 8;
+    p[14] = c_avg;
+    uint8_t r[2] = {0};
+    if (rawRead(c_cmdPram, p, sizeof(p), r, sizeof(r)) != RADIOLIB_ERR_NONE || (((uint16_t)r[0] << 8) | r[1]) != n) {
+        spectrumState = SPEC_NONE; // set the radio up again on the next call
+        return false;
+    }
+    uint32_t w[32];
+    if (lora.readRegMem32(c_sweepOut, w, (n + 1) / 2) != RADIOLIB_ERR_NONE)
+        return false;
+    for (uint16_t k = 0; k < n; k++) {
+        const uint32_t sum = (w[k / 2] >> (16 * (k & 1))) & 0xFFFF;
+        out[k] = -(int16_t)(sum / c_avg); // 9-bit RSSI = -2 x dBm
+    }
+    return true;
+}
+
+template <typename T> bool LR20x0Interface<T>::spectrumFftFrame(uint32_t centerHz, uint8_t nseg, uint8_t *out)
+{
+    if (spectrumState != SPEC_FFT || centerHz < spectrumCalLo || centerHz > spectrumCalHi) {
+        spectrumState = SPEC_NONE;
+        // calibrate for +-10 MHz around the center so small moves only retune
+        if (!pramReady() || !spectrumTuneRx(centerHz - 10000000, centerHz + 10000000, centerHz, c_packetTypeRaw, 62500))
+            return false;
+        spectrumState = SPEC_FFT;
+        spectrumFftHz = centerHz;
+    } else if (centerHz != spectrumFftHz) {
+        if (lora.setRfFrequency(centerHz) != RADIOLIB_ERR_NONE)
+            return false;
+        spectrumFftHz = centerHz;
+    }
+    const uint8_t p[3] = {9, nseg, 0};
+    uint8_t r[4] = {0};
+    if (rawRead(c_cmdPram, p, sizeof(p), r, sizeof(r)) != RADIOLIB_ERR_NONE || !r[1]) {
+        spectrumState = SPEC_NONE;
+        return false;
+    }
+    for (unsigned half = 0; half < 2; half++) {
+        uint32_t w[32];
+        if (lora.readRegMem32(c_fftOut + 128 * half, w, 32) != RADIOLIB_ERR_NONE)
+            return false;
+        for (unsigned k = 0; k < 128; k++)
+            out[128 * half + k] = (uint8_t)(w[k / 4] >> (8 * (k & 3)));
+    }
+    return true;
+}
+
+template <typename T> void LR20x0Interface<T>::spectrumLeave()
+{
+    // a reset clears the PRAM program and the raw packet type; reconfigure() restores the mesh settings after this
+    spectrumState = SPEC_NONE;
+    (void)fullBegin(getFreq());
+}
+#endif
 
 // Don't leak the alias into the files InterfacesTemplates.cpp includes after this one.
 #undef LR20x0

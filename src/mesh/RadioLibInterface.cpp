@@ -376,6 +376,8 @@ bool RadioLibInterface::findInTxQueue(NodeNum from, PacketId id)
 
 void RadioLibInterface::updateNoiseFloor()
 {
+    if (spectrumHold) // the spectrum scanner owns the radio
+        return;
     // Only sample from idle receive mode. TX/RX-critical paths must return to radio work quickly.
     if (!isReceiving || sendingPacket != NULL) {
         return;
@@ -561,6 +563,9 @@ void RadioLibInterface::deliverPendingIrqFromPoll(PendingISR cause)
 
 void RadioLibInterface::onNotify(uint32_t notification)
 {
+    // A spectrum scan holds the radio: drop notifications, spectrumEnd() restarts RX and the TX timer
+    if (spectrumHold)
+        return;
     // Frames the readout task captured whose ISR_RX a later notification overwrote. Deliver them, and re-arm as ISR_RX
     // would unless this thread has moved the radio on.
     if (notification != ISR_RX && deliverCapturedFrames() && isReceiving)
@@ -1061,6 +1066,8 @@ void RadioLibInterface::startReceive()
 
 void RadioLibInterface::pollMissedIrqs()
 {
+    if (spectrumHold) // the spectrum scanner owns the radio
+        return;
     // RadioLibInterface::enableInterrupt uses EDGE-TRIGGERED interrupts. Poll as a backup to catch missed edges.
     // The main loop's flag reads are a sequence too: an LR11x0/LR20x0 status read zeroes RadioLib's per-Module SPI widths
     // for its transfer, so a readout landing inside one would take the chip's status bytes for the frame length.
@@ -1206,6 +1213,8 @@ void RadioLibInterface::checkStaleRxFlags()
 
 void RadioLibInterface::periodicRadioMaintenance()
 {
+    if (spectrumHold) // the spectrum scanner owns the radio
+        return;
     // Every startReceive() call site is event-driven (RX/TX ISR, the CAD-busy branch, reconfigure), and a
     // radio left with RX off can no longer raise an RX interrupt - on a node with nothing to transmit
     // nothing would ever re-arm it. This periodic tick is that retry; maybeRecoverChipStateLoss() throttles.
@@ -1570,4 +1579,54 @@ bool RadioLibInterface::startSend(meshtastic_MeshPacket *txp)
 
         return res == RADIOLIB_ERR_NONE;
     }
+}
+
+bool RadioLibInterface::spectrumBegin()
+{
+    if (spectrumHold)
+        return true;
+    if (isSending())
+        return false; // let the transmission finish, the caller retries
+    RadioSequence seq(this);
+    spectrumHold = true;
+    isReceiving = false;
+    disableInterrupt();
+    if (!spectrumEnter()) {
+        spectrumHold = false;
+        LOG_WARN("Spectrum: radio cannot scan, mesh resumed");
+        reconfigure();
+        return false;
+    }
+    LOG_INFO("Spectrum: mesh paused");
+    return true;
+}
+
+bool RadioLibInterface::spectrumSweep(uint32_t loHz, uint32_t hiHz, uint32_t startHz, uint32_t stepHz, uint16_t n, int16_t *out)
+{
+    if (!spectrumHold)
+        return false;
+    RadioSequence seq(this);
+    return spectrumSweepChunk(loHz, hiHz, startHz, stepHz, n, out);
+}
+
+bool RadioLibInterface::spectrumFft(uint32_t centerHz, uint8_t nseg, uint8_t *out)
+{
+    if (!spectrumHold)
+        return false;
+    RadioSequence seq(this);
+    return spectrumFftFrame(centerHz, nseg, out);
+}
+
+void RadioLibInterface::spectrumEnd()
+{
+    if (!spectrumHold)
+        return;
+    {
+        RadioSequence seq(this);
+        spectrumLeave();
+        spectrumHold = false;
+    }
+    reconfigure(); // home frequency, modem, power, IRQ mapping and RX
+    setTransmitDelay();
+    LOG_INFO("Spectrum: scan stopped, mesh resumed");
 }

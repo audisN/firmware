@@ -317,6 +317,32 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     uint16_t txDrop = 0;
 
   public:
+    /**
+     * Spectrum scanner (board option HAS_SPECTRUM). While a scan holds the radio the mesh is paused: queued packets
+     * wait, radio notifications and the loop's radio upkeep are ignored. spectrumEnd() reconfigures the radio and
+     * restarts the TX timer. Call these from the main loop thread only.
+     */
+    bool spectrumBegin();
+    /// sweep n points from startHz in stepHz (radio stays in RX); loHz..hiHz is the window to calibrate for.
+    /// out[] = RSSI in 0.5 dB steps
+    bool spectrumSweep(uint32_t loHz, uint32_t hiHz, uint32_t startHz, uint32_t stepHz, uint16_t n, int16_t *out);
+    /// one 256-point FFT frame around centerHz (250 kHz wide, bin 0 = DC, 128..255 negative), 0.5 dB steps, relative
+    bool spectrumFft(uint32_t centerHz, uint8_t nseg, uint8_t *out);
+    void spectrumEnd();
+    bool spectrumActive() const { return spectrumHold; }
+
+  protected:
+    /// Chip-specific parts of the scanner
+    virtual bool spectrumEnter() { return false; }
+    virtual bool spectrumSweepChunk(uint32_t loHz, uint32_t hiHz, uint32_t startHz, uint32_t stepHz, uint16_t n, int16_t *out)
+    {
+        return false;
+    }
+    virtual bool spectrumFftFrame(uint32_t centerHz, uint8_t nseg, uint8_t *out) { return false; }
+    virtual void spectrumLeave() {}
+    volatile bool spectrumHold = false;
+
+  public:
     RadioLibInterface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
                       RADIOLIB_PIN_TYPE busy, PhysicalLayer *iface = NULL);
 
