@@ -967,7 +967,7 @@ constexpr uint16_t c_cmdPram = 0x012D;
 constexpr uint32_t c_pramHost = 0x801000; // write-only window (reading it stalls the chip)
 constexpr uint32_t c_pramCpu = 0x101000;
 constexpr uint32_t c_sweepOut = 0x101C80;
-constexpr uint16_t c_dwell = 600;          // x16 busy-wait loops on the chip after each retune (~0.85 ms)
+constexpr uint16_t c_dwell = 600;        // x16 busy-wait loops on the chip after each retune (~0.85 ms)
 constexpr uint16_t c_avg = 2;              // RSSI readings averaged per point
 constexpr uint16_t c_settleDwell = 4000;   // first point after entering RX reads garbage: settle on one
 
@@ -1057,28 +1057,15 @@ bool LR20x0Interface<T>::spectrumTuneRx(uint32_t loHz, uint32_t hiHz, uint32_t f
     const uint16_t cal[3] = {(uint16_t)((uint16_t)((loHz + 2000000) / 4000000) | path),
                              (uint16_t)((uint16_t)((mid + 2000000) / 4000000) | path),
                              (uint16_t)((uint16_t)((hiHz + 2000000) / 4000000) | path)};
-    {
-        int16_t e = lora.standby();
-        if (e != RADIOLIB_ERR_NONE) {
-            LOG_WARN("Spectrum: tune step lora.standby -> %d", e);
-            return false;
-        }
-    }
-    {
-        int16_t e = lora.setPacketType(RADIOLIB_LR2021_PACKET_TYPE_LORA);
-        if (e != RADIOLIB_ERR_NONE) {
-            LOG_WARN("Spectrum: tune step lora.setPacketType -> %d", e);
-            return false;
-        }
-    }
-    // the LoRa channel filter is the measurement bandwidth
-    {
-        int16_t e = lora.setBandwidth(filterHz < 250000 ? 125.0f : 250.0f);
-        if (e != RADIOLIB_ERR_NONE) {
-            LOG_WARN("Spectrum: tune step lora.setBandwidth -> %d", e);
-            return false;
-        }
-    }
+    auto ok = [](const char *step, int16_t err) {
+        if (err != RADIOLIB_ERR_NONE)
+            LOG_WARN("Spectrum: %s failed (%d)", step, err);
+        return err == RADIOLIB_ERR_NONE;
+    };
+    if (!ok("standby", lora.standby()) || !ok("setPacketType", lora.setPacketType(RADIOLIB_LR2021_PACKET_TYPE_LORA)) ||
+        // the LoRa channel filter is the measurement bandwidth
+        !ok("setBandwidth", lora.setBandwidth(filterHz < 250000 ? 125.0f : 250.0f)))
+        return false;
     // a strong signal on a calibration frequency can fail it; the measurement is still useful, but the chip keeps the
     // error and refuses later commands until it is cleared
     const int16_t calSt = lora.calibrateFrontEnd(cal);
@@ -1088,16 +1075,10 @@ bool LR20x0Interface<T>::spectrumTuneRx(uint32_t loHz, uint32_t hiHz, uint32_t f
         LOG_DEBUG("Spectrum: frontend calibration st %d errors 0x%04x, cleared", calSt, errors);
         (void)lora.clearErrors();
     }
-    if (lora.setRxPath(hf ? RADIOLIB_LR2021_RX_PATH_HF : RADIOLIB_LR2021_RX_PATH_LF, hf ? lora.gainModeHf : lora.gainModeLf) !=
-        RADIOLIB_ERR_NONE)
+    if (!ok("setRxPath", lora.setRxPath(hf ? RADIOLIB_LR2021_RX_PATH_HF : RADIOLIB_LR2021_RX_PATH_LF,
+                                        hf ? lora.gainModeHf : lora.gainModeLf)) ||
+        !ok("setRfFrequency", lora.setRfFrequency(freqHz)))
         return false;
-    {
-        int16_t e = lora.setRfFrequency(freqHz);
-        if (e != RADIOLIB_ERR_NONE) {
-            LOG_WARN("Spectrum: tune step lora.setRfFrequency -> %d", e);
-            return false;
-        }
-    }
     spectrumCalLo = loHz;
     spectrumCalHi = hiHz;
     spectrumFilterHz = filterHz;
@@ -1117,7 +1098,8 @@ bool LR20x0Interface<T>::spectrumSweepTry(uint32_t loHz, uint32_t hiHz, uint32_t
             return false;
         }
         if (!spectrumTuneRx(loHz, hiHz, startHz, stepHz)) {
-            LOG_WARN("Spectrum: tune failed lo %u hi %u f %u filter %u", (unsigned)loHz, (unsigned)hiHz, (unsigned)startHz, (unsigned)stepHz);
+            LOG_WARN("Spectrum: tune failed, window %u-%u kHz, filter %u kHz", (unsigned)(loHz / 1000), (unsigned)(hiHz / 1000),
+                     (unsigned)(stepHz / 1000));
             return false;
         }
         int16_t rxst = lora.setRx(RADIOLIB_LR2021_RX_TIMEOUT_INF);
@@ -1143,7 +1125,8 @@ bool LR20x0Interface<T>::spectrumSweepTry(uint32_t loHz, uint32_t hiHz, uint32_t
     uint8_t r[2] = {0};
     int16_t st = rawRead(c_cmdPram, p, sizeof(p), r, sizeof(r));
     if (st != RADIOLIB_ERR_NONE || (((uint16_t)r[0] << 8) | r[1]) != n) {
-        LOG_WARN("Spectrum: sweep cmd st %d got %u of %u, f %u step %u", st, ((unsigned)r[0] << 8) | r[1], n, (unsigned)startHz, (unsigned)stepHz);
+        LOG_WARN("Spectrum: sweep command st %d, %u of %u points at %u kHz", st, ((unsigned)r[0] << 8) | r[1], n,
+                 (unsigned)(startHz / 1000));
         spectrumState = SPEC_NONE; // set the radio up again on the next call
         return false;
     }
