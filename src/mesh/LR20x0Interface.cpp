@@ -169,10 +169,15 @@ template <typename T> bool LR20x0Interface<T>::init()
 
     int res = lora.begin(getFreq(), bw, sf, cr, syncWord, power, preambleLength, tcxoVoltage);
 
-    // Retry if we get SPI command failed - some units need extra TCXO stabilization time
-    if (res == RADIOLIB_ERR_SPI_CMD_FAILED) {
-        LOG_WARN("LR20x0 init failed with %d (SPI_CMD_FAILED), retry after delay", res);
-        delay(100);
+    // Retry if we get SPI command failed - some units need extra TCXO stabilization time, and a strong transmitter
+    // right next to the antenna (e.g. an ExpressLRS remote) can saturate the chip's calibration at boot (error
+    // 0x4000, SRC saturation): clear the error and try again, the hopping transmitter is soon elsewhere
+    for (int attempt = 1; attempt <= 5 && res == RADIOLIB_ERR_SPI_CMD_FAILED; attempt++) {
+        uint16_t errors = 0;
+        (void)lora.getErrors(&errors);
+        LOG_WARN("LR20x0 init failed with %d (SPI_CMD_FAILED, chip errors 0x%04x), retry %d", res, errors, attempt);
+        (void)lora.clearErrors();
+        delay(100 * attempt);
         res = lora.begin(getFreq(), bw, sf, cr, syncWord, power, preambleLength, tcxoVoltage);
     }
 
@@ -258,6 +263,12 @@ template <typename T> bool LR20x0Interface<T>::init()
         if (config.lora.sx126x_rx_boosted_gain) { // the name is unfortunate but historically accurate
             res = lora.setRxBoostedGainMode(LR2021_RX_GAIN_BOOST_LEVEL);
             LOG_INFO("Set RX gain to boosted mode (level %d); result: %d", LR2021_RX_GAIN_BOOST_LEVEL, res);
+            if (res == RADIOLIB_ERR_SPI_CMD_FAILED) { // see the calibration retry above
+                (void)lora.clearErrors();
+                (void)lora.standby();
+                res = lora.setRxBoostedGainMode(LR2021_RX_GAIN_BOOST_LEVEL);
+                LOG_WARN("Set RX gain retried after clearing chip errors; result: %d", res);
+            }
         } else {
             res = lora.setRxBoostedGainMode(0);
             LOG_INFO("Set RX gain to power saving mode (boosted mode off); result: %d", res);
@@ -434,9 +445,13 @@ template <typename T> bool LR20x0Interface<T>::fullBegin(float freq)
 
         rxArmedContinuous = false; // begin() resets the chip
         int res = lora.begin(freq, bw, sf, cr, syncWord, power, preambleLength, tcxoVoltage);
-        if (res == RADIOLIB_ERR_SPI_CMD_FAILED) {
-            LOG_WARN("LR20x0 band-hop begin SPI_CMD_FAILED, retrying");
-            delay(100);
+        // as in init(): a strong transmitter nearby can saturate the calibration in begin()
+        for (int attempt = 1; attempt <= 5 && res == RADIOLIB_ERR_SPI_CMD_FAILED; attempt++) {
+            uint16_t errors = 0;
+            (void)lora.getErrors(&errors);
+            LOG_WARN("LR20x0 band-hop begin SPI_CMD_FAILED (chip errors 0x%04x), retry %d", errors, attempt);
+            (void)lora.clearErrors();
+            delay(100 * attempt);
             res = lora.begin(freq, bw, sf, cr, syncWord, power, preambleLength, tcxoVoltage);
         }
         if (TCXO_OPTIONAL_ENABLED && res != RADIOLIB_ERR_NONE && res != RADIOLIB_ERR_CHIP_NOT_FOUND && tcxoVoltage > 0) {
@@ -1158,6 +1173,122 @@ bool LR20x0Interface<T>::spectrumSweepChunk(uint32_t loHz, uint32_t hiHz, uint32
             (void)lora.setDioIrqConfig(lora.irqDioNum, 0);
     }
     return false;
+}
+
+// Signal finder: tune to freqHz with the probe's modulation and wait for a LoRa CAD hit or a GFSK / OOK / FLRC preamble.
+template <typename T>
+bool LR20x0Interface<T>::spectrumDetectOn(const SpectrumProbe &pr, uint32_t freqHz, uint32_t windowMs, bool *found, int16_t *rssi)
+{
+    *found = false;
+    spectrumState = SPEC_NONE; // the next sweep sets the radio up again
+    const bool hf = freqHz >= 1500000000UL;
+    const uint16_t path = hf ? RADIOLIB_LR2021_CALIBRATE_FE_HF_PATH : RADIOLIB_LR2021_CALIBRATE_FE_LF_PATH;
+    const uint16_t calCode = (uint16_t)((uint16_t)((freqHz + 2000000) / 4000000) | path);
+    const uint16_t cal[3] = {calCode, calCode, calCode};
+    if (lora.standby() != RADIOLIB_ERR_NONE || lora.setPacketType(pr.modem) != RADIOLIB_ERR_NONE)
+        return false;
+    int16_t st = RADIOLIB_ERR_NONE;
+    switch (pr.modem) {
+    case RADIOLIB_LR2021_PACKET_TYPE_LORA:
+        st = lora.setBandwidth(pr.bwKHz);
+        if (st == RADIOLIB_ERR_NONE)
+            st = lora.setSpreadingFactor(pr.sf);
+        if (st == RADIOLIB_ERR_NONE && pr.packet) { // explicit header with CRC: the header check proves LoRa
+            st = lora.setLoRaPacketParams(8, 0, 255, 1, 0);
+            if (st == RADIOLIB_ERR_NONE)
+                st = lora.setLoRaSyncword(pr.loraSync);
+        }
+        break;
+    case RADIOLIB_LR2021_PACKET_TYPE_GFSK:
+        st = lora.setGfskModulationParams(pr.bitrate, RADIOLIB_LR2021_GFSK_BPSK_FLRC_OOK_SHAPING_NONE, pr.rxBw, pr.fdevHz);
+        if (st == RADIOLIB_ERR_NONE) // 16-bit preamble detector, variable length, no CRC
+            st = lora.setGfskPacketParams(32, 16, false, false, 0, 1, 255, 0, 0);
+        if (st == RADIOLIB_ERR_NONE && pr.packet) // a 16-bit sync word match proves this GFSK setting
+            st = lora.setGfskSyncword(pr.sync, 2, true);
+        break;
+    case RADIOLIB_LR2021_PACKET_TYPE_OOK:
+        st = lora.setOokModulationParams(pr.bitrate, RADIOLIB_LR2021_GFSK_BPSK_FLRC_OOK_SHAPING_NONE, pr.rxBw,
+                                         RADIOLIB_LR2021_OOK_DEPTH_FULL);
+        if (st == RADIOLIB_ERR_NONE)
+            st = lora.setOokPacketParams(32, 0, 1, 255, 0, 0);
+        break;
+    case RADIOLIB_LR2021_PACKET_TYPE_FLRC:
+        st = lora.setFlrcModulationParams(pr.flrcBr, RADIOLIB_LR2021_FLRC_CR_1_0, RADIOLIB_LR2021_GFSK_BPSK_FLRC_OOK_SHAPING_NONE);
+        if (st == RADIOLIB_ERR_NONE) // 16-bit AGC preamble, 32-bit sync word we cannot know: a sync failure still means FLRC
+            st = lora.setFlrcPacketParams(3, 4, 1, 0x01, false, 0, 255);
+        break;
+    default:
+        return false;
+    }
+    if (st != RADIOLIB_ERR_NONE) {
+        LOG_DEBUG("Spectrum: probe setup for modem %u failed (%d)", pr.modem, st);
+        (void)lora.setPacketType(RADIOLIB_LR2021_PACKET_TYPE_LORA);
+        return false;
+    }
+    (void)lora.calibrateFrontEnd(cal);
+    uint16_t errors = 0;
+    if (lora.getErrors(&errors) == RADIOLIB_ERR_NONE && errors)
+        (void)lora.clearErrors();
+    const uint32_t irqs = RADIOLIB_LR2021_IRQ_PREAMBLE_DETECTED | RADIOLIB_LR2021_IRQ_SYNCWORD_VALID |
+                          RADIOLIB_LR2021_IRQ_SYNC_FAIL | RADIOLIB_LR2021_IRQ_CAD_DETECTED | RADIOLIB_LR2021_IRQ_CAD_DONE |
+                          RADIOLIB_LR2021_IRQ_LORA_HDR_CRC_ERROR | RADIOLIB_LR2021_IRQ_RX_DONE;
+    bool ok = lora.setRxPath(hf ? RADIOLIB_LR2021_RX_PATH_HF : RADIOLIB_LR2021_RX_PATH_LF, hf ? lora.gainModeHf : lora.gainModeLf) ==
+                  RADIOLIB_ERR_NONE &&
+              lora.setRfFrequency(freqHz) == RADIOLIB_ERR_NONE && lora.setDioIrqConfig(lora.irqDioNum, irqs) == RADIOLIB_ERR_NONE;
+
+    const uint32_t start = millis();
+    if (ok && pr.packet) {
+        // listen for a real packet: LoRa header valid (bit 6, same as the GFSK sync word valid)
+        (void)lora.clearIrqState(RADIOLIB_LR2021_IRQ_ALL);
+        ok = lora.setRx(RADIOLIB_LR2021_RX_TIMEOUT_INF) == RADIOLIB_ERR_NONE;
+        while (ok && !*found && millis() - start < windowMs) {
+            const uint32_t irq = lora.getIrqFlags();
+            *found = (irq & RADIOLIB_LR2021_IRQ_SYNCWORD_VALID) != 0;
+            if (!*found)
+                delay(1);
+        }
+    } else if (ok && pr.modem == RADIOLIB_LR2021_PACKET_TYPE_LORA) {
+        // repeated CADs: a hopping or bursty transmitter is only on this frequency now and then
+        while (ok && !*found && millis() - start < windowMs) {
+            (void)lora.clearIrqState(RADIOLIB_LR2021_IRQ_ALL);
+            // 4 symbols and a peak threshold above RadioLib's 2-symbol defaults: strong non-LoRa signals (a carrier,
+            // FSK, LTE) otherwise trip the CAD on almost every spreading factor
+            static const uint8_t detPeak[8] = {66, 66, 66, 68, 68, 70, 74, 78}; // SF5..SF12
+            ok = lora.startCad(4, detPeak[pr.sf - 5], false, RADIOLIB_LR2021_LORA_CAD_EXIT_MODE_FALLBACK, 0) == RADIOLIB_ERR_NONE;
+            const uint32_t cadStart = millis();
+            uint32_t irq = 0;
+            while (ok && !(irq & RADIOLIB_LR2021_IRQ_CAD_DONE) && millis() - cadStart < 200) {
+                irq = lora.getIrqFlags();
+                if (!(irq & RADIOLIB_LR2021_IRQ_CAD_DONE))
+                    delayMicroseconds(200);
+            }
+            *found = (irq & RADIOLIB_LR2021_IRQ_CAD_DETECTED) != 0;
+        }
+    } else if (ok) {
+        (void)lora.clearIrqState(RADIOLIB_LR2021_IRQ_ALL);
+        ok = lora.setRx(RADIOLIB_LR2021_RX_TIMEOUT_INF) == RADIOLIB_ERR_NONE;
+        while (ok && !*found && millis() - start < windowMs) {
+            const uint32_t irq = lora.getIrqFlags();
+            *found = (irq & (RADIOLIB_LR2021_IRQ_PREAMBLE_DETECTED | RADIOLIB_LR2021_IRQ_SYNCWORD_VALID |
+                             RADIOLIB_LR2021_IRQ_SYNC_FAIL)) != 0;
+            if (!*found)
+                delay(1);
+        }
+    }
+    if (rssi) { // how strong: the instantaneous RSSI right after the detection
+        float r = 0;
+        if (*found && !pr.packet && pr.modem == RADIOLIB_LR2021_PACKET_TYPE_LORA) {
+            // the CAD has ended in standby: listen again (the RSSI needs a few ms in RX)
+            (void)lora.setRx(RADIOLIB_LR2021_RX_TIMEOUT_INF);
+            delay(5);
+        }
+        *rssi = *found && lora.getRssiInst(&r) == RADIOLIB_ERR_NONE ? (int16_t)(r * 2) : INT16_MIN;
+    }
+    (void)lora.standby();
+    (void)lora.setDioIrqConfig(lora.irqDioNum, 0);
+    (void)lora.clearIrqState(RADIOLIB_LR2021_IRQ_ALL);
+    (void)lora.setPacketType(RADIOLIB_LR2021_PACKET_TYPE_LORA);
+    return ok;
 }
 
 template <typename T> void LR20x0Interface<T>::spectrumLeave()

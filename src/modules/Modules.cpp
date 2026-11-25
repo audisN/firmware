@@ -155,6 +155,9 @@ static void warnUnreadCommandSensors()
  * Create module instances here.  If you are adding a new module, you must 'new' it here (or somewhere else)
  */
 #ifdef HAS_SPECTRUM
+#ifdef HAS_SIGNAL_FINDER
+#include "SignalFinder.h"
+#endif
 #include "SpectrumScanner.h"
 #endif
 
@@ -162,6 +165,9 @@ void setupModules()
 {
 #ifdef HAS_SPECTRUM
     new SpectrumScanner(); // board option: spectrum scanner on the screen
+#ifdef HAS_SIGNAL_FINDER
+    new SignalFinder(); // work in progress, off by default
+#endif
 #endif
 #if (HAS_BUTTON || ARCH_PORTDUINO) && !MESHTASTIC_EXCLUDE_INPUTBROKER
     if (config.display.displaymode != meshtastic_Config_DisplayConfig_DisplayMode_COLOR) {

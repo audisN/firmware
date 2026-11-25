@@ -1609,6 +1609,15 @@ bool RadioLibInterface::spectrumSweep(uint32_t loHz, uint32_t hiHz, uint32_t sta
     return spectrumSweepChunk(loHz, hiHz, startHz, stepHz, n, out);
 }
 
+bool RadioLibInterface::spectrumDetect(const SpectrumProbe &probe, uint32_t freqHz, uint32_t windowMs, bool *found, int16_t *rssi)
+{
+    *found = false;
+    if (!spectrumHold)
+        return false;
+    RadioSequence seq(this);
+    return spectrumDetectOn(probe, freqHz, windowMs, found, rssi);
+}
+
 void RadioLibInterface::spectrumEnd()
 {
     if (!spectrumHold)

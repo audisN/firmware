@@ -326,6 +326,22 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     /// sweep n points from startHz in stepHz (radio stays in RX); loHz..hiHz is the window to calibrate for.
     /// out[] = RSSI in 0.5 dB steps
     bool spectrumSweep(uint32_t loHz, uint32_t hiHz, uint32_t startHz, uint32_t stepHz, uint16_t n, int16_t *out);
+    /// Signal finder probe: listen on freqHz for up to windowMs for this modulation (LoRa CAD, or a GFSK / OOK / FLRC
+    /// preamble). *found tells whether it was heard, *rssi (0.5 dB steps) how strong. The next spectrumSweep() sets the
+    /// radio up again.
+    struct SpectrumProbe {
+        uint8_t modem;      // chip packet type: LoRa, GFSK, OOK or FLRC
+        uint8_t sf;         // LoRa
+        float bwKHz;        // LoRa
+        uint32_t bitrate;   // GFSK / OOK, bit/s
+        uint32_t fdevHz;    // GFSK
+        uint8_t rxBw;       // GFSK / OOK receiver bandwidth code
+        uint8_t flrcBr;     // FLRC bitrate code
+        bool packet;        // receive instead: a valid LoRa header (sync word loraSync) or a GFSK sync word match
+        uint8_t loraSync;   // LoRa sync word (0x12 private, 0x34 LoRaWAN, 0x2B Meshtastic)
+        uint8_t sync[2];    // GFSK sync word
+    };
+    bool spectrumDetect(const SpectrumProbe &probe, uint32_t freqHz, uint32_t windowMs, bool *found, int16_t *rssi = nullptr);
     void spectrumEnd();
     bool spectrumActive() const { return spectrumHold; }
 
@@ -333,6 +349,10 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     /// Chip-specific parts of the scanner
     virtual bool spectrumEnter() { return false; }
     virtual bool spectrumSweepChunk(uint32_t loHz, uint32_t hiHz, uint32_t startHz, uint32_t stepHz, uint16_t n, int16_t *out)
+    {
+        return false;
+    }
+    virtual bool spectrumDetectOn(const SpectrumProbe &probe, uint32_t freqHz, uint32_t windowMs, bool *found, int16_t *rssi)
     {
         return false;
     }

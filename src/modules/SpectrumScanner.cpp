@@ -138,6 +138,8 @@ int32_t SpectrumScanner::runOnce()
     }
 
     if (!active) {
+        if (radio->spectrumActive())
+            return 200; // the signal finder still holds the radio
         if (!radio->spectrumBegin()) {
             LOG_DEBUG("Spectrum: radio busy, retry");
             return 100; // radio busy (sending), try again shortly

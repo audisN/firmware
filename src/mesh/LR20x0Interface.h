@@ -49,6 +49,7 @@ template <class T> class LR20x0Interface : public RadioLibInterface
     // spectrum scanner on the chip's own CPU (lr2021-re PRAM program, LR2021 ROM 1.24): on-chip sweep
     bool spectrumEnter() override;
     bool spectrumSweepChunk(uint32_t loHz, uint32_t hiHz, uint32_t startHz, uint32_t stepHz, uint16_t n, int16_t *out) override;
+    bool spectrumDetectOn(const SpectrumProbe &probe, uint32_t freqHz, uint32_t windowMs, bool *found, int16_t *rssi) override;
     bool spectrumSweepTry(uint32_t loHz, uint32_t hiHz, uint32_t startHz, uint32_t stepHz, uint16_t n, int16_t *out);
     uint8_t spectrumFailures = 0;
     void spectrumLeave() override;
