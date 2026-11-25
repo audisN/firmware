@@ -32,6 +32,10 @@
 // does not try. Fixing the speed makes the probe use only 230400; Meshtastic then reconfigures the module.
 #define GPS_BAUDRATE 230400
 
+// Vibration motor on IO41 (microSD DATA1, unused in 1-bit mode; 10k pull-up on the board). Drive it through a transistor
+// (active HIGH) with a flyback diode, never straight from the GPIO. Used by the External Notification module.
+#define PIN_VIBRATION 41
+
 // microSD: SDIO slot used in 1-bit SDMMC mode (SD_SCLK_PIN / SD_MOSI_PIN / SD_MISO_PIN set in platformio.ini)
 
 // ---- NiceRF LoRa2021F33-2G4 (LR2021) on Arduino SPI (SPI2/FSPI); the display uses SPI3 ----
