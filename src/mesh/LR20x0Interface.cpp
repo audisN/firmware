@@ -187,14 +187,6 @@ template <typename T> bool LR20x0Interface<T>::init()
 
     // \todo Display actual typename of the adapter, not just `LR20x0`
     LOG_INFO("LR20x0 init result %d", res);
-#if RADIOLIB_GODMODE
-    {
-        uint8_t fwMajor = 0, fwMinor = 0;
-        int16_t vst = lora.getVersion(&fwMajor, &fwMinor);
-        LOG_INFO("LR20x0 chip firmware (GetVersion 0x0101): st %d, version %u.%u (0x%02X%02X)", vst, fwMajor, fwMinor, fwMajor,
-                 fwMinor);
-    }
-#endif
     if (res == RADIOLIB_ERR_CHIP_NOT_FOUND || res == RADIOLIB_ERR_SPI_CMD_FAILED)
         return false;
 

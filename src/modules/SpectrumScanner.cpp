@@ -148,39 +148,6 @@ int32_t SpectrumScanner::runOnce()
     }
     RadioLibInterface *radio = RadioLibInterface::instance;
 
-#ifdef SPECTRUM_DIAG
-    // bench test without the screen: sweep 750-960 MHz, then an FFT on the mesh frequency, logging the results
-    static uint8_t diagStep = 0;
-    if (diagStep == 0 && millis() > 20000) {
-        diagStep = 1;
-        requestSweep(SPECTRUM_RANGE_SUBGHZ, 1000, 750000);
-        return 10;
-    }
-    if (diagStep == 1 && sweeps >= 3) {
-        diagStep = 2;
-        LOG_INFO("SpecDiag: sweep %u ms, peak %d dBm at %u kHz", (unsigned)sweepMs, peak / 2, (unsigned)(peakHz / 1000));
-        for (int i = 0; i < bins; i += 10)
-            LOG_INFO("SpecDiag: %u MHz %d dBm", (unsigned)((startHz + i * binHz) / 1000000),
-                     data[i] == SPECTRUM_NO_DATA ? -999 : data[i] / 2);
-        requestFft(869525);
-        return 10;
-    }
-    if (diagStep == 2 && cur.mode == SPECTRUM_FFT && sweeps >= 50) {
-        diagStep = 3;
-        LOG_INFO("SpecDiag: fft %u frames, offset %.1f dB, peak %d dBm at %u Hz", (unsigned)sweeps, fftOffsetDb, peak / 2,
-                 (unsigned)peakHz);
-        for (int i = 0; i < SPECTRUM_FFT_BINS; i += 8)
-            LOG_INFO("SpecDiag: fft bin %d %d dBm", i, data[i] / 2);
-        stop();
-    }
-    if (diagStep == 1 || diagStep == 2) {
-        concurrency::LockGuard guard(&lock);
-        lastPollMs = millis(); // nobody polls during the bench test
-        next = want;
-        polled = lastPollMs;
-    }
-#endif
-
     if (next.run && millis() - polled > c_watchdogMs) {
         LOG_WARN("Spectrum: screen stopped polling, stop scan");
         concurrency::LockGuard guard(&lock);
@@ -251,9 +218,6 @@ int32_t SpectrumScanner::runSweep(RadioLibInterface *radio)
         peakHz = sweepPeakHz;
         sweepPeak = SPECTRUM_NO_DATA;
         point = 0;
-        if (sweeps % 20 == 1)
-            LOG_DEBUG("Spectrum: sweep %u, %u ms, %u columns, peak %d dBm at %u kHz", (unsigned)sweeps, (unsigned)sweepMs, bins,
-                      peak / 2, (unsigned)(peakHz / 1000));
     }
     return 1;
 }
