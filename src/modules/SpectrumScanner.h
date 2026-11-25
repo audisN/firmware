@@ -20,7 +20,6 @@ class SpectrumScanner : public concurrency::OSThread
     SpectrumScanner();
 
     bool requestSweep(uint8_t range, uint16_t stepKHz, uint32_t startKHz);
-    bool requestFft(uint32_t centerKHz);
     void stop();
     bool getFrame(SpectrumFrame *frame);
 
@@ -30,20 +29,16 @@ class SpectrumScanner : public concurrency::OSThread
   private:
     struct Settings {
         bool run = false;
-        uint8_t mode = SPECTRUM_SWEEP;
         uint8_t range = SPECTRUM_RANGE_SUBGHZ;
         uint16_t stepKHz = 1000;
         uint32_t startKHz = 700000;  // sweep window start
-        uint32_t centerKHz = 869525; // FFT center
         bool operator==(const Settings &o) const
         {
-            return run == o.run && mode == o.mode && range == o.range && stepKHz == o.stepKHz && startKHz == o.startKHz &&
-                   centerKHz == o.centerKHz;
+            return run == o.run && range == o.range && stepKHz == o.stepKHz && startKHz == o.startKHz;
         }
     };
 
     int32_t runSweep(RadioLibInterface *radio);
-    int32_t runFft(RadioLibInterface *radio);
     void applySettings(const Settings &next); // under lock
     void clearData();                         // under lock
 
@@ -68,9 +63,6 @@ class SpectrumScanner : public concurrency::OSThread
     int16_t sweepPeak = SPECTRUM_NO_DATA;
     uint32_t sweepPeakHz = 0;
     uint32_t sweepStartMs = 0;
-    // FFT (main loop only)
-    bool fftCalibrated = false;
-    float fftOffsetDb = -190; // relative FFT dB -> estimated dBm (measured on entry)
 };
 
 extern SpectrumScanner *spectrumScanner;

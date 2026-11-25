@@ -1,5 +1,5 @@
-// Spectrum scanner (board option HAS_SPECTRUM): sweeps a frequency window or shows an FFT around one frequency with
-// the LoRa radio while the mesh is paused. The screen (device-ui) drives it through spectrum/SpectrumApi.h.
+// Spectrum scanner (board option HAS_SPECTRUM): sweeps a frequency window with the LoRa radio while the mesh is
+// paused. The screen (device-ui) drives it through spectrum/SpectrumApi.h.
 
 #include "configuration.h"
 
@@ -9,7 +9,6 @@
 #include "concurrency/LockGuard.h"
 #include "mesh/RadioLibInterface.h"
 #include "spectrum/SpectrumApi.h"
-#include <math.h>
 #include <string.h>
 
 SpectrumScanner *spectrumScanner = nullptr;
@@ -19,10 +18,7 @@ namespace
 constexpr uint32_t c_idleIntervalMs = 200;
 constexpr uint32_t c_pointHz = 250000;       // measuring step and filter inside a column
 constexpr uint16_t c_chunk = 32;             // points per radio command (~35 ms), then let the loop run
-constexpr uint32_t c_fftIntervalMs = 20;
-constexpr uint8_t c_fftSegments = 4;         // FFT frames averaged on the chip per result
 constexpr uint32_t c_watchdogMs = 15 * 1000; // stop if the screen stops asking for data
-constexpr int c_fftRawBins = 256;           // the chip's FFT: 250 kHz, bin 0 = DC, 128..255 negative
 } // namespace
 
 SpectrumScanner::SpectrumScanner() : concurrency::OSThread("Spectrum")
@@ -49,20 +45,9 @@ bool SpectrumScanner::requestSweep(uint8_t range, uint16_t stepKHz, uint32_t sta
     range = range == SPECTRUM_RANGE_HF ? SPECTRUM_RANGE_HF : SPECTRUM_RANGE_SUBGHZ;
     concurrency::LockGuard guard(&lock);
     want.run = true;
-    want.mode = SPECTRUM_SWEEP;
     want.range = range;
     want.stepKHz = stepKHz;
     want.startKHz = spectrumClampStartKHz(range, stepKHz, startKHz);
-    lastPollMs = millis();
-    return true;
-}
-
-bool SpectrumScanner::requestFft(uint32_t centerKHz)
-{
-    concurrency::LockGuard guard(&lock);
-    want.run = true;
-    want.mode = SPECTRUM_FFT;
-    want.centerKHz = centerKHz;
     lastPollMs = millis();
     return true;
 }
@@ -77,13 +62,11 @@ bool SpectrumScanner::getFrame(SpectrumFrame *frame)
 {
     concurrency::LockGuard guard(&lock);
     lastPollMs = millis();
-    frame->mode = cur.mode;
     frame->range = cur.range;
     frame->active = active;
     frame->bins = bins;
     frame->startHz = startHz;
     frame->binHz = binHz;
-    frame->centerHz = cur.centerKHz * 1000;
     frame->sweeps = sweeps;
     frame->sweepMs = sweepMs;
     frame->progress = progress;
@@ -96,7 +79,7 @@ bool SpectrumScanner::getFrame(SpectrumFrame *frame)
 // switch to new settings; a sweep window moved by whole columns keeps its data shifted along
 void SpectrumScanner::applySettings(const Settings &next)
 {
-    const bool sameGrid = active && cur.mode == SPECTRUM_SWEEP && next.mode == SPECTRUM_SWEEP && next.range == cur.range &&
+    const bool sameGrid = active && next.range == cur.range &&
                           next.stepKHz == cur.stepKHz;
     if (sameGrid) {
         const int32_t shift = ((int32_t)next.startKHz - (int32_t)cur.startKHz) / (int32_t)cur.stepKHz; // columns
@@ -116,25 +99,15 @@ void SpectrumScanner::applySettings(const Settings &next)
     } else {
         clearData();
     }
-    const bool fftMoved = next.mode == SPECTRUM_FFT && cur.mode != SPECTRUM_FFT; // calibrate on entry, not on every pan
     cur = next;
-    if (cur.mode == SPECTRUM_SWEEP) {
-        bins = spectrumColumns(cur.range, cur.stepKHz);
-        startHz = cur.startKHz * 1000;
-        binHz = cur.stepKHz * 1000;
-    } else {
-        bins = SPECTRUM_FFT_BINS;
-        startHz = cur.centerKHz * 1000 - SPECTRUM_FFT_SPAN_HZ / 2;
-        binHz = SPECTRUM_FFT_SPAN_HZ / SPECTRUM_FFT_BINS;
-        if (fftMoved)
-            fftCalibrated = false;
-    }
+    bins = spectrumColumns(cur.range, cur.stepKHz);
+    startHz = cur.startKHz * 1000;
+    binHz = cur.stepKHz * 1000;
     point = 0;
     colMax = SPECTRUM_NO_DATA;
     sweepPeak = SPECTRUM_NO_DATA;
     sweepStartMs = millis();
-    LOG_INFO("Spectrum: mode %u range %u step %u kHz start %u kHz center %u kHz", cur.mode, cur.range, cur.stepKHz,
-             (unsigned)cur.startKHz, (unsigned)cur.centerKHz);
+    LOG_INFO("Spectrum: range %u step %u kHz start %u kHz", cur.range, cur.stepKHz, (unsigned)cur.startKHz);
 }
 
 int32_t SpectrumScanner::runOnce()
@@ -177,7 +150,7 @@ int32_t SpectrumScanner::runOnce()
         applySettings(next);
     }
 
-    return cur.mode == SPECTRUM_FFT ? runFft(radio) : runSweep(radio);
+    return runSweep(radio);
 }
 
 int32_t SpectrumScanner::runSweep(RadioLibInterface *radio)
@@ -222,63 +195,11 @@ int32_t SpectrumScanner::runSweep(RadioLibInterface *radio)
     return 1;
 }
 
-int32_t SpectrumScanner::runFft(RadioLibInterface *radio)
-{
-    const uint32_t centerHz = cur.centerKHz * 1000;
-    if (!fftCalibrated) {
-        // the chip's FFT is in relative dB: scale it so the total power matches the RSSI over the same 250 kHz
-        int16_t rssi = SPECTRUM_NO_DATA;
-        const bool okRssi = radio->spectrumSweep(centerHz - 10000000, centerHz + 10000000, centerHz, c_pointHz, 1, &rssi);
-        uint8_t raw[c_fftRawBins];
-        if (!okRssi || !radio->spectrumFft(centerHz, c_fftSegments, raw)) {
-            // keep the last offset (about -190 dB on this board) rather than holding the FFT back
-            LOG_WARN("Spectrum: FFT calibration failed, using offset %.1f dB", fftOffsetDb);
-            fftCalibrated = true;
-            return 20;
-        }
-        double sum = 0;
-        for (int i = 0; i < c_fftRawBins; i++)
-            sum += pow(10.0, raw[i] / 20.0); // 0.5 dB steps -> power
-        fftOffsetDb = rssi / 2.0f - (float)(10.0 * log10(sum));
-        fftCalibrated = true;
-        LOG_INFO("Spectrum: FFT at %u kHz, RSSI %d dBm, offset %.1f dB", (unsigned)cur.centerKHz, rssi / 2, fftOffsetDb);
-    }
-
-    uint8_t raw[c_fftRawBins];
-    if (!radio->spectrumFft(centerHz, c_fftSegments, raw)) {
-        LOG_WARN("Spectrum: FFT frame failed");
-        return 100;
-    }
-    concurrency::LockGuard guard(&lock);
-    int16_t best = SPECTRUM_NO_DATA;
-    uint16_t bestBin = 0;
-    for (int i = 0; i < SPECTRUM_FFT_BINS; i++) {
-        // low to high frequency, the middle SPECTRUM_FFT_BINS of the chip's bins
-        const uint8_t r = raw[(i - SPECTRUM_FFT_BINS / 2 + c_fftRawBins) % c_fftRawBins];
-        const int16_t v = (int16_t)lroundf((r / 2.0f + fftOffsetDb) * 2.0f);
-        data[i] = v;
-        if (v > best) {
-            best = v;
-            bestBin = i;
-        }
-    }
-    sweeps++;
-    peak = best;
-    peakHz = startHz + bestBin * binHz + binHz / 2;
-    progress = SPECTRUM_FFT_BINS;
-    return c_fftIntervalMs;
-}
-
 // --- C++ API used by device-ui (spectrum/SpectrumApi.h) ---
 
 bool spectrumStartSweep(uint8_t range, uint16_t stepKHz, uint32_t startKHz)
 {
     return spectrumScanner && spectrumScanner->requestSweep(range, stepKHz, startKHz);
-}
-
-bool spectrumStartFft(uint32_t centerKHz)
-{
-    return spectrumScanner && spectrumScanner->requestFft(centerKHz);
 }
 
 void spectrumStop(void)

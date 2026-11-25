@@ -326,8 +326,6 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     /// sweep n points from startHz in stepHz (radio stays in RX); loHz..hiHz is the window to calibrate for.
     /// out[] = RSSI in 0.5 dB steps
     bool spectrumSweep(uint32_t loHz, uint32_t hiHz, uint32_t startHz, uint32_t stepHz, uint16_t n, int16_t *out);
-    /// one 256-point FFT frame around centerHz (250 kHz wide, bin 0 = DC, 128..255 negative), 0.5 dB steps, relative
-    bool spectrumFft(uint32_t centerHz, uint8_t nseg, uint8_t *out);
     void spectrumEnd();
     bool spectrumActive() const { return spectrumHold; }
 
@@ -338,7 +336,6 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     {
         return false;
     }
-    virtual bool spectrumFftFrame(uint32_t centerHz, uint8_t nseg, uint8_t *out) { return false; }
     virtual void spectrumLeave() {}
     volatile bool spectrumHold = false;
 

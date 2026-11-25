@@ -1609,14 +1609,6 @@ bool RadioLibInterface::spectrumSweep(uint32_t loHz, uint32_t hiHz, uint32_t sta
     return spectrumSweepChunk(loHz, hiHz, startHz, stepHz, n, out);
 }
 
-bool RadioLibInterface::spectrumFft(uint32_t centerHz, uint8_t nseg, uint8_t *out)
-{
-    if (!spectrumHold)
-        return false;
-    RadioSequence seq(this);
-    return spectrumFftFrame(centerHz, nseg, out);
-}
-
 void RadioLibInterface::spectrumEnd()
 {
     if (!spectrumHold)
