@@ -46,10 +46,11 @@ template <class T> class LR20x0Interface : public RadioLibInterface
     int16_t getCurrentRSSI() override;
 
 #if defined(HAS_SPECTRUM) && RADIOLIB_GODMODE
-    // spectrum scanner on the chip's own CPU (lr2021-re PRAM program, LR2021 ROM 1.24): on-chip sweep
+    // spectrum scanner on the chip's own CPU (lr2021-re PRAM program, LR2021 ROM 1.24): on-chip sweep and FFT
     bool spectrumEnter() override;
     bool spectrumSweepChunk(uint32_t loHz, uint32_t hiHz, uint32_t startHz, uint32_t stepHz, uint16_t n, int16_t *out) override;
     bool spectrumDetectOn(const SpectrumProbe &probe, uint32_t freqHz, uint32_t windowMs, bool *found, int16_t *rssi) override;
+    bool spectrumFftFrame(uint32_t centerHz, uint8_t nseg, bool narrow, uint8_t *out) override;
     bool spectrumSweepTry(uint32_t loHz, uint32_t hiHz, uint32_t startHz, uint32_t stepHz, uint16_t n, int16_t *out);
     uint8_t spectrumFailures = 0;
     void spectrumLeave() override;
@@ -57,9 +58,9 @@ template <class T> class LR20x0Interface : public RadioLibInterface
     bool pramLoad();
     bool pramHello();
     int16_t rawRead(uint16_t cmd, const uint8_t *params, size_t paramLen, uint8_t *reply, size_t replyLen);
-    bool spectrumTuneRx(uint32_t loHz, uint32_t hiHz, uint32_t freqHz, uint32_t filterHz);
-    enum : uint8_t { SPEC_NONE, SPEC_SWEEP } spectrumState = SPEC_NONE;
-    uint32_t spectrumCalLo = 0, spectrumCalHi = 0, spectrumFilterHz = 0;
+    bool spectrumTuneRx(uint32_t loHz, uint32_t hiHz, uint32_t freqHz, uint8_t packetType, uint32_t filterHz);
+    enum : uint8_t { SPEC_NONE, SPEC_SWEEP, SPEC_FFT } spectrumState = SPEC_NONE;
+    uint32_t spectrumCalLo = 0, spectrumCalHi = 0, spectrumFftHz = 0, spectrumFilterHz = 0;
 #endif
 
     /**

@@ -351,6 +351,9 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
         uint8_t sync[2];    // GFSK sync word
     };
     bool spectrumDetect(const SpectrumProbe &probe, uint32_t freqHz, uint32_t windowMs, bool *found, int16_t *rssi = nullptr);
+    /// one 256-point FFT frame around centerHz (250 kHz wide, or 125 kHz when narrow; bin 0 = DC, 128..255 negative),
+    /// 0.5 dB steps, relative
+    bool spectrumFft(uint32_t centerHz, uint8_t nseg, bool narrow, uint8_t *out);
     void spectrumEnd();
     bool spectrumActive() const { return spectrumHold; }
 
@@ -365,6 +368,7 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     {
         return false;
     }
+    virtual bool spectrumFftFrame(uint32_t centerHz, uint8_t nseg, bool narrow, uint8_t *out) { return false; }
     virtual void spectrumLeave() {}
     volatile bool spectrumHold = false;
 

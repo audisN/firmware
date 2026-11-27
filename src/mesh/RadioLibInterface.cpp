@@ -1635,6 +1635,14 @@ bool RadioLibInterface::spectrumDetect(const SpectrumProbe &probe, uint32_t freq
     return spectrumDetectOn(probe, freqHz, windowMs, found, rssi);
 }
 
+bool RadioLibInterface::spectrumFft(uint32_t centerHz, uint8_t nseg, bool narrow, uint8_t *out)
+{
+    if (!spectrumHold)
+        return false;
+    RadioSequence seq(this);
+    return spectrumFftFrame(centerHz, nseg, narrow, out);
+}
+
 void RadioLibInterface::spectrumEnd()
 {
     if (!spectrumHold)
