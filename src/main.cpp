@@ -46,6 +46,9 @@
 #include "graphics/Screen.h"
 #include "graphics/ScreenMirror.h"
 #include "main.h"
+#if defined(ARCH_ESP32) && defined(SD_LOG)
+#include "platform/esp32/SdLog.h"
+#endif
 #include "memory/MemAudit.h"
 #include "mesh/generated/meshtastic/config.pb.h"
 #include "meshUtils.h"
@@ -430,6 +433,9 @@ void setup()
 
 #ifdef DEBUG_PORT
     consoleInit(); // Set serial baud rate and init our mesh console
+#if defined(ARCH_ESP32) && defined(SD_LOG)
+    sdLogBegin();
+#endif
 #endif
 
     // M23 (audit): APPROTECT engagement moved below fsInit() so we can gate

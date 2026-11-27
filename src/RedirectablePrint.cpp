@@ -7,6 +7,9 @@
 #include "memGet.h"
 #include "mesh/generated/meshtastic/mesh.pb.h"
 #include <assert.h>
+#if defined(ARCH_ESP32) && defined(SD_LOG)
+#include "platform/esp32/SdLog.h"
+#endif
 #include <cstring>
 #include <memory>
 #include <stdexcept>
@@ -364,6 +367,15 @@ void RedirectablePrint::log(const char *logLevel, const char *format, ...)
 
         va_start(arg, format);
 
+#if defined(ARCH_ESP32) && defined(SD_LOG)
+        {
+            static char sdBuf[256]; // under inDebugPrint
+            va_copy(arg_copy, arg);
+            vsnprintf(sdBuf, sizeof(sdBuf), newFormat, arg_copy);
+            va_end(arg_copy);
+            sdLogLine(logLevel, sdBuf);
+        }
+#endif
         va_copy(arg_copy, arg);
         log_to_serial(logLevel, newFormat, arg_copy);
         va_end(arg_copy);
