@@ -70,6 +70,13 @@ class MeshService
     StaticPointerQueue<meshtastic_ClientNotification, MAX_RX_NOTIFICATION_TOPHONE> toPhoneClientNotificationQueue;
 #endif
 
+#ifdef UI_OWN_TOPHONE_QUEUE
+    // The on-device UI (PacketAPI) gets its own copy of everything meant for "the phone", so it no longer takes
+    // packets - e.g. the routing ACK a BLE/USB client waits for - out of the shared queue before that client sees them
+    StaticPointerQueue<meshtastic_MeshPacket, MAX_RX_TOPHONE> toUiQueue;
+    StaticPointerQueue<meshtastic_QueueStatus, MAX_RX_QUEUESTATUS_TOPHONE> toUiQueueStatusQueue;
+#endif
+
     // This holds the last QueueStatus send
     meshtastic_QueueStatus lastQueueStatus;
 
@@ -127,6 +134,11 @@ class MeshService
     /// Return the next packet destined to the phone.  FIXME, somehow use fromNum to allow the phone to retry the
     /// last few packets if needs to.
     meshtastic_MeshPacket *getForPhone() { return toPhoneQueue.dequeuePtr(0); }
+#ifdef UI_OWN_TOPHONE_QUEUE
+    meshtastic_MeshPacket *getForUi() { return toUiQueue.dequeuePtr(0); }
+    meshtastic_QueueStatus *getQueueStatusForUi() { return toUiQueueStatusQueue.dequeuePtr(0); }
+    bool uiApiPresent = false; // set by the PacketAPI the on-device UI talks to
+#endif
 
     /// Allows the bluetooth handler to free packets after they have been sent
     void releaseToPool(meshtastic_MeshPacket *p) { packetPool.release(p); }

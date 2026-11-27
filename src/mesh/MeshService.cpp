@@ -413,6 +413,21 @@ ErrorCode MeshService::sendQueueStatusToPhone(const meshtastic_QueueStatus &qs, 
 
     lastQueueStatus = *copied;
 
+#ifdef UI_OWN_TOPHONE_QUEUE
+    if (uiApiPresent) {
+        meshtastic_QueueStatus *ui = queueStatusPool.allocCopy(*copied, 0);
+        if (ui) {
+            if (toUiQueueStatusQueue.numFree() == 0) {
+                meshtastic_QueueStatus *d = toUiQueueStatusQueue.dequeuePtr(0);
+                if (d)
+                    releaseQueueStatusToPool(d);
+            }
+            if (!toUiQueueStatusQueue.enqueue(ui, 0))
+                releaseQueueStatusToPool(ui);
+        }
+    }
+#endif
+
     res = toPhoneQueueStatusQueue.enqueue(copied, 0);
     if (!res)
         releaseQueueStatusToPool(copied);
@@ -550,6 +565,21 @@ void MeshService::sendToPhone(meshtastic_MeshPacket *p)
         return;
     }
 #endif
+#endif
+
+#ifdef UI_OWN_TOPHONE_QUEUE
+    if (uiApiPresent) {
+        meshtastic_MeshPacket *ui = packetPool.allocCopy(*p, 0);
+        if (ui) {
+            if (toUiQueue.numFree() == 0) { // the UI drains continuously; drop its oldest rather than this
+                meshtastic_MeshPacket *d = toUiQueue.dequeuePtr(0);
+                if (d)
+                    releaseToPool(d);
+            }
+            if (!toUiQueue.enqueue(ui, 0))
+                releaseToPool(ui);
+        }
+    }
 #endif
 
     if (toPhoneQueue.numFree() == 0) {

@@ -1798,7 +1798,12 @@ bool PhoneAPI::available()
         return true;
     case STATE_SEND_PACKETS: {
         if (!queueStatusPacketForPhone)
+#ifdef UI_OWN_TOPHONE_QUEUE
+            queueStatusPacketForPhone =
+                api_type == TYPE_PACKET ? service->getQueueStatusForUi() : service->getQueueStatusForPhone();
+#else
             queueStatusPacketForPhone = service->getQueueStatusForPhone();
+#endif
         if (!mqttClientProxyMessageForPhone)
             mqttClientProxyMessageForPhone = service->getMqttClientProxyMessageForPhone();
         if (!clientNotification)
@@ -1829,7 +1834,13 @@ bool PhoneAPI::available()
 #endif
 
         if (!packetForPhone)
+#ifdef UI_OWN_TOPHONE_QUEUE
+            if (api_type == TYPE_PACKET)
+                service->uiApiPresent = true; // the UI polls from boot on; copies start with its first poll
+            packetForPhone = api_type == TYPE_PACKET ? service->getForUi() : service->getForPhone();
+#else
             packetForPhone = service->getForPhone();
+#endif
         hasPacket = !!packetForPhone;
         if (hasPacket)
             return true;
