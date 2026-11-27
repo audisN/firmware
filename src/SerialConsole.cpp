@@ -164,6 +164,25 @@ int32_t SerialConsole::runOnce()
     s_serialLinkUp = linkUp;
 #endif
 
+#if defined(IS_USB_HWCDC) && defined(USB_UNPLUG_CLOSES_API)
+    // HWCDC has no DTR edge, so an unplugged phone/computer client stays "connected" for the 15-minute inactivity
+    // timeout: it keeps taking packets from the shared to-phone queue (the on-device UI then never sees new messages)
+    // and its bounded-blocking writes slow the main loop. isPlugged() (a SOF watchdog) flaps briefly while USB is fine
+    // (#11864), so close only after it has stayed false for a few seconds.
+    {
+        static uint32_t unpluggedSinceMs = 0;
+        if (HWCDC::isPlugged() || !checkIsConnected()) {
+            unpluggedSinceMs = 0;
+        } else if (!unpluggedSinceMs) {
+            unpluggedSinceMs = millis() | 1;
+        } else if (millis() - unpluggedSinceMs > 5000) {
+            LOG_INFO("USB unplugged, close serial API client");
+            unpluggedSinceMs = 0;
+            close();
+        }
+    }
+#endif
+
 #ifdef HELTEC_MESH_SOLAR
     // After enabling the mesh solar serial port module configuration, command processing is handled by the serial port module.
     if (moduleConfig.serial.enabled && moduleConfig.serial.override_console_serial_port &&
